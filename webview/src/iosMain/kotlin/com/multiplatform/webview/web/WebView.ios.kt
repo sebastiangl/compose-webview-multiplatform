@@ -62,9 +62,19 @@ actual data class WebViewFactoryParam(
 /**
  * iOS-specific WebView parameters.
  *
- * @param customSchemes List of custom URL schemes to register (e.g., "app", "local").
+ * @param customSchemes List of custom URL schemes to register at WebView creation time
+ *                      (for example, "app", "local"). These schemes are added to the
+ *                      underlying [WKWebViewConfiguration] when the WebView is created
+ *                      and cannot be added to or removed from an existing WebView instance.
+ *
  *                      Requests to these schemes will be handled by the RequestInterceptor,
- *                      which should return WebRequestInterceptResult.Respond with the response data.
+ *                      which should return [WebRequestInterceptResult.Respond] with the
+ *                      response data.
+ *
+ *                      Note: WKWebView does not allow certain built-in schemes such as
+ *                      "http", "https", "file", "ftp", "about", "data", or "javascript"
+ *                      to be used as custom schemes. These reserved schemes will be
+ *                      automatically filtered out and not registered.
  */
 actual class PlatformWebViewParams(
     val customSchemes: List<String> = emptyList(),
@@ -102,7 +112,8 @@ fun IOSWebView(
             )
         }
     val navigationDelegate = remember { WKNavigationDelegate(state, navigator) }
-    val schemeHandler = remember { WKSchemeHandler(navigator) }
+    // Recreate scheme handler if navigator changes to avoid stale state
+    val schemeHandler = remember(navigator) { WKSchemeHandler(navigator) }
     val scope = rememberCoroutineScope()
 
     UIKitView(
@@ -131,9 +142,22 @@ fun IOSWebView(
                     )
 
                     // Register custom URL scheme handlers
-                    platformWebViewParams?.customSchemes?.forEach { scheme ->
-                        setURLSchemeHandler(schemeHandler, forURLScheme = scheme)
-                    }
+                    // Filter out reserved schemes that WKWebView doesn't allow
+                    val reservedSchemes = setOf(
+                        "http", "https", "file", "ftp", "about", "data", "javascript"
+                    )
+                    platformWebViewParams?.customSchemes
+                        ?.filter { scheme ->
+                            val normalized = scheme.lowercase()
+                            val isReserved = normalized in reservedSchemes
+                            if (isReserved) {
+                                println("WKWebView: Skipping registration of reserved URL scheme: $scheme")
+                            }
+                            !isReserved
+                        }
+                        ?.forEach { scheme ->
+                            setURLSchemeHandler(schemeHandler, forURLScheme = scheme)
+                        }
                 }
             factory(WebViewFactoryParam(config))
                 .apply {

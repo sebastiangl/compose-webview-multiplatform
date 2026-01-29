@@ -22,6 +22,9 @@ import platform.darwin.NSObject
  * WKURLSchemeHandler implementation for custom URL schemes.
  * This allows intercepting requests with custom schemes (e.g., "app://", "local://")
  * and providing custom responses.
+ *
+ * Note: WKURLSchemeHandler methods are called on the main thread by WebKit,
+ * so the activeTasks map access is thread-safe in this context.
  */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 class WKSchemeHandler(
@@ -46,10 +49,14 @@ class WKSchemeHandler(
             headerMap[it.key.toString()] = it.value.toString()
         }
 
+        // WKURLSchemeTaskProtocol does not expose frame info directly.
+        // Assume main frame for custom scheme requests as a reasonable default.
+        val isForMainFrame = true
+
         val webRequest = WebRequest(
             url = url,
             headers = headerMap,
-            isForMainFrame = true,
+            isForMainFrame = isForMainFrame,
             isRedirect = false,
             method = request.HTTPMethod ?: "GET",
         )
@@ -63,30 +70,37 @@ class WKSchemeHandler(
             return
         }
 
-        // Call the interceptor
-        val result = interceptor.onInterceptUrlRequest(webRequest, navigator)
+        try {
+            // Call the interceptor
+            val result = interceptor.onInterceptUrlRequest(webRequest, navigator)
 
-        // Check if task was cancelled
-        if (activeTasks[taskId] != true) {
-            KLogger.info { "WKSchemeHandler: Task was cancelled" }
-            return
+            // Check if task was cancelled
+            if (activeTasks[taskId] != true) {
+                KLogger.info { "WKSchemeHandler: Task was cancelled" }
+                failTask(startURLSchemeTask, "Task was cancelled")
+                activeTasks.remove(taskId)
+                return
+            }
+
+            when (result) {
+                is WebRequestInterceptResult.Respond -> {
+                    respondWithData(startURLSchemeTask, result, url)
+                }
+                is WebRequestInterceptResult.Reject -> {
+                    failTask(startURLSchemeTask, "Request rejected by interceptor")
+                }
+                else -> {
+                    // For Allow and Modify, we can't actually make the request
+                    // because this is a custom scheme. Return an error.
+                    failTask(startURLSchemeTask, "Custom scheme requires Respond result")
+                }
+            }
+        } catch (e: Exception) {
+            KLogger.e { "WKSchemeHandler: Exception in request interceptor: ${e.message}" }
+            failTask(startURLSchemeTask, "Request interceptor threw an exception: ${e.message}")
+        } finally {
+            activeTasks.remove(taskId)
         }
-
-        when (result) {
-            is WebRequestInterceptResult.Respond -> {
-                respondWithData(startURLSchemeTask, result, url)
-            }
-            is WebRequestInterceptResult.Reject -> {
-                failTask(startURLSchemeTask, "Request rejected by interceptor")
-            }
-            else -> {
-                // For Allow and Modify, we can't actually make the request
-                // because this is a custom scheme. Return an error.
-                failTask(startURLSchemeTask, "Custom scheme requires Respond result")
-            }
-        }
-
-        activeTasks.remove(taskId)
     }
 
     @ObjCSignatureOverride
@@ -102,24 +116,43 @@ class WKSchemeHandler(
         url: String,
     ) {
         try {
+            // Validate URL
+            val nsUrl = NSURL.URLWithString(url)
+            if (nsUrl == null) {
+                val message = "WKSchemeHandler: Invalid URL: $url"
+                KLogger.e { message }
+                failTask(task, message)
+                return
+            }
+
             // Build response headers
+            // Add custom headers first, then set Content-Type from mimeType to ensure
+            // mimeType takes precedence over any Content-Type in headers
             val headerFields = mutableMapOf<Any?, Any?>()
+            result.headers.forEach { (key, value) ->
+                // Skip Content-Type from headers - we use result.mimeType instead
+                if (!key.equals("Content-Type", ignoreCase = true)) {
+                    headerFields[key] = value
+                }
+            }
             headerFields["Content-Type"] = result.mimeType
             headerFields["Content-Length"] = result.data.size.toString()
-            result.headers.forEach { (key, value) ->
-                headerFields[key] = value
-            }
 
             // Create HTTP response
             val response = NSHTTPURLResponse(
-                uRL = NSURL.URLWithString(url)!!,
+                uRL = nsUrl,
                 statusCode = result.statusCode.toLong(),
                 HTTPVersion = "HTTP/1.1",
                 headerFields = headerFields,
             )
 
+            if (response == null) {
+                failTask(task, "Failed to create HTTP response")
+                return
+            }
+
             // Send response
-            task.didReceiveResponse(response!!)
+            task.didReceiveResponse(response)
 
             // Send data
             if (result.data.isNotEmpty()) {
