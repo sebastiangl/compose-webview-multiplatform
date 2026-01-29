@@ -29,12 +29,15 @@ import platform.darwin.NSObject
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 class WKSchemeHandler(
     private val navigator: WebViewNavigator,
-) : NSObject(), WKURLSchemeHandlerProtocol {
-
+) : NSObject(),
+    WKURLSchemeHandlerProtocol {
     private val activeTasks = mutableMapOf<Int, Boolean>()
 
     @ObjCSignatureOverride
-    override fun webView(webView: WKWebView, startURLSchemeTask: WKURLSchemeTaskProtocol) {
+    override fun webView(
+        webView: WKWebView,
+        startURLSchemeTask: WKURLSchemeTaskProtocol,
+    ) {
         val taskId = startURLSchemeTask.hashCode()
         activeTasks[taskId] = true
 
@@ -53,13 +56,14 @@ class WKSchemeHandler(
         // Assume main frame for custom scheme requests as a reasonable default.
         val isForMainFrame = true
 
-        val webRequest = WebRequest(
-            url = url,
-            headers = headerMap,
-            isForMainFrame = isForMainFrame,
-            isRedirect = false,
-            method = request.HTTPMethod ?: "GET",
-        )
+        val webRequest =
+            WebRequest(
+                url = url,
+                headers = headerMap,
+                isForMainFrame = isForMainFrame,
+                isRedirect = false,
+                method = request.HTTPMethod ?: "GET",
+            )
 
         // Check if we have an interceptor
         val interceptor = navigator.requestInterceptor
@@ -104,7 +108,10 @@ class WKSchemeHandler(
     }
 
     @ObjCSignatureOverride
-    override fun webView(webView: WKWebView, stopURLSchemeTask: WKURLSchemeTaskProtocol) {
+    override fun webView(
+        webView: WKWebView,
+        stopURLSchemeTask: WKURLSchemeTaskProtocol,
+    ) {
         val taskId = stopURLSchemeTask.hashCode()
         activeTasks[taskId] = false
         KLogger.info { "WKSchemeHandler: Task stopped" }
@@ -139,12 +146,13 @@ class WKSchemeHandler(
             headerFields["Content-Length"] = result.data.size.toString()
 
             // Create HTTP response
-            val response = NSHTTPURLResponse(
-                uRL = nsUrl,
-                statusCode = result.statusCode.toLong(),
-                HTTPVersion = "HTTP/1.1",
-                headerFields = headerFields,
-            )
+            val response =
+                NSHTTPURLResponse(
+                    uRL = nsUrl,
+                    statusCode = result.statusCode.toLong(),
+                    HTTPVersion = "HTTP/1.1",
+                    headerFields = headerFields,
+                )
 
             if (response == null) {
                 failTask(task, "Failed to create HTTP response")
@@ -157,10 +165,11 @@ class WKSchemeHandler(
             // Send data
             if (result.data.isNotEmpty()) {
                 result.data.usePinned { pinned ->
-                    val nsData = NSData.create(
-                        bytes = pinned.addressOf(0),
-                        length = result.data.size.toULong(),
-                    )
+                    val nsData =
+                        NSData.create(
+                            bytes = pinned.addressOf(0),
+                            length = result.data.size.toULong(),
+                        )
                     task.didReceiveData(nsData)
                 }
             }
@@ -175,13 +184,17 @@ class WKSchemeHandler(
         }
     }
 
-    private fun failTask(task: WKURLSchemeTaskProtocol, message: String) {
+    private fun failTask(
+        task: WKURLSchemeTaskProtocol,
+        message: String,
+    ) {
         try {
-            val error = platform.Foundation.NSError.errorWithDomain(
-                domain = "WKSchemeHandler",
-                code = -1,
-                userInfo = mapOf("NSLocalizedDescriptionKey" to message),
-            )
+            val error =
+                platform.Foundation.NSError.errorWithDomain(
+                    domain = "WKSchemeHandler",
+                    code = -1,
+                    userInfo = mapOf("NSLocalizedDescriptionKey" to message),
+                )
             task.didFailWithError(error)
         } catch (e: Exception) {
             KLogger.e { "WKSchemeHandler: Error failing task: ${e.message}" }

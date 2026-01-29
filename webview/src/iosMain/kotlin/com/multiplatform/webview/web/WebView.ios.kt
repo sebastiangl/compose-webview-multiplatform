@@ -143,10 +143,18 @@ fun IOSWebView(
 
                     // Register custom URL scheme handlers
                     // Filter out reserved schemes that WKWebView doesn't allow
-                    val reservedSchemes = setOf(
-                        "http", "https", "file", "ftp", "about", "data", "javascript"
-                    )
-                    platformWebViewParams?.customSchemes
+                    val reservedSchemes =
+                        setOf(
+                            "http",
+                            "https",
+                            "file",
+                            "ftp",
+                            "about",
+                            "data",
+                            "javascript",
+                        )
+                    platformWebViewParams
+                        ?.customSchemes
                         ?.filter { scheme ->
                             val normalized = scheme.lowercase()
                             val isReserved = normalized in reservedSchemes
@@ -154,8 +162,7 @@ fun IOSWebView(
                                 println("WKWebView: Skipping registration of reserved URL scheme: $scheme")
                             }
                             !isReserved
-                        }
-                        ?.forEach { scheme ->
+                        }?.forEach { scheme ->
                             setURLSchemeHandler(schemeHandler, forURLScheme = scheme)
                         }
                 }
